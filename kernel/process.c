@@ -67,7 +67,7 @@ void switch_to(process* proc) {
 
   // make user page table. macro MAKE_SATP is defined in kernel/riscv.h. added @lab2_1
   uint64 user_satp = MAKE_SATP(proc->pagetable);
-
+  
   // return_to_user() is defined in kernel/strap_vector.S. switch to user mode with sret.
   // note, return_to_user takes two parameters @ and after lab2_1.
   return_to_user(proc->trapframe, user_satp);
@@ -195,11 +195,25 @@ int do_fork( process* parent)
         // DO NOT COPY THE PHYSICAL PAGES, JUST MAP THEM.
         map_pages(child->pagetable, parent->mapped_info[i].va, parent->mapped_info[i].npages * PGSIZE,
           lookup_pa(parent->pagetable, parent->mapped_info[i].va), prot_to_type(PROT_READ | PROT_EXEC, 1));
-        // after mapping, register the vm region (do not delete codes below!)
         child->mapped_info[child->total_mapped_region].va = parent->mapped_info[i].va;
         child->mapped_info[child->total_mapped_region].npages =
           parent->mapped_info[i].npages;
         child->mapped_info[child->total_mapped_region].seg_type = CODE_SEGMENT;
+        child->total_mapped_region++;
+        break;
+      case DATA_SEGMENT:
+        for (int j = 0; j < parent->mapped_info[i].npages; j++)
+        {//由于alloc_page()仅分配一页空间，所以需要分多次复制
+          void *childDataPa = alloc_page();
+          memcpy(childDataPa, (void *)lookup_pa(parent->pagetable, parent->mapped_info[i].va + PGSIZE * j),
+            PGSIZE);
+          map_pages(child->pagetable, parent->mapped_info[i].va + PGSIZE * j, PGSIZE, (uint64)childDataPa,
+            prot_to_type(PROT_READ | PROT_WRITE, 1));
+        }
+        child->mapped_info[child->total_mapped_region].va = parent->mapped_info[i].va;
+        child->mapped_info[child->total_mapped_region].npages =
+          parent->mapped_info[i].npages;
+        child->mapped_info[child->total_mapped_region].seg_type = DATA_SEGMENT;
         child->total_mapped_region++;
         break;
     }
@@ -211,4 +225,89 @@ int do_fork( process* parent)
   insert_to_ready_queue( child );
 
   return child->pid;
+}
+
+uint64 do_wait(uint64 pid)
+{
+  if (pid == -1)
+  {//当pid为-1时，父进程等待任意一个子进程退出即返回子进程的pid
+    for (uint64 i = 0; i < NPROC; i++)
+    {
+      if (procs[i].parent == current)
+      {
+        if (procs[i].status != ZOMBIE)
+        {
+          insert_to_blocked_queue(current);
+          schedule();
+          return -2;//等待子进程结束
+        }
+        else
+        {//子进程退出即返回子进程的pid
+          procs[i].status = FREE;
+          return i;
+        }
+      }      
+    }
+    return -1;//当前进程没有子进程
+  }
+  else if (pid > 0 && pid < NPROC)
+  {//当pid大于0时，父进程等待进程号为pid的子进程退出即返回子进程的pid
+    if (procs[pid].parent == current)
+    {
+      if (procs[pid].status == ZOMBIE)
+      {
+        procs[pid].status = FREE;
+        return pid;
+      }
+      else
+      {
+        insert_to_blocked_queue(current);
+        schedule();
+        return -2;//等待子进程结束
+      }
+    }
+    else
+    {
+      return -1;//不是当前进程子进程
+    }
+  }
+  else
+  {//pid不合法
+    return -1;
+  }
+}
+
+process *blocked_queue_head = NULL;
+//用于将等待子进程结束的父进程加入等待队列
+void insert_to_blocked_queue(process *proc)
+{
+  //sprint( "going to insert process %d to blocked queue.\n", proc->pid);
+  if (!blocked_queue_head)
+  {//空队列
+    proc->status = BLOCKED;
+    proc->queue_next = NULL;
+    blocked_queue_head = proc;
+  }
+  else
+  {
+    process *p = blocked_queue_head;
+    do
+    {//检查proc是否已在队列中
+      if (p == proc)
+      {
+        return;
+      }
+      if (p->queue_next)
+      {
+        p = p->queue_next;
+      }
+      else
+      {
+        break;
+      }
+    } while (p->queue_next != NULL);
+    proc->status = BLOCKED;
+    proc->queue_next = NULL;
+    p->queue_next = proc;
+  }
 }

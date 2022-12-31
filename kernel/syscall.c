@@ -31,10 +31,38 @@ ssize_t sys_user_print(const char* buf, size_t n) {
 //
 // implement the SYS_user_exit syscall
 //
+extern process *blocked_queue_head;
 ssize_t sys_user_exit(uint64 code) {
   sprint("User exit with code:%d.\n", code);
   // reclaim the current process, and reschedule. added @lab3_1
   free_process( current );
+  // 处理增加的阻塞队列
+  process *p = blocked_queue_head, *prior = p, *t;
+  while (p)
+  {
+    if (p == current->parent)
+    {
+      if (p == blocked_queue_head)
+      {
+        blocked_queue_head = p->queue_next;
+        insert_to_ready_queue(p);
+        break;
+      }
+      t = p;
+      p = p->queue_next;
+      prior->queue_next = p;
+      insert_to_ready_queue(t);
+      break;
+    }
+    else
+    {
+      if (p != blocked_queue_head)
+      {
+        prior = p;
+      }
+      p = p->queue_next;
+    }
+  }
   schedule();
   return 0;
 }
@@ -81,6 +109,11 @@ ssize_t sys_user_yield() {
   return 0;
 }
 
+ssize_t sys_user_wait(uint64 pid)
+{
+  return (ssize_t)do_wait(pid);
+}
+
 //
 // [a0]: the syscall number; [a1] ... [a7]: arguments to the syscalls.
 // returns the code of success, (e.g., 0 means success, fail for otherwise)
@@ -100,6 +133,8 @@ long do_syscall(long a0, long a1, long a2, long a3, long a4, long a5, long a6, l
       return sys_user_fork();
     case SYS_user_yield:
       return sys_user_yield();
+    case SYS_user_wait:
+      return sys_user_wait(a1);
     default:
       panic("Unknown syscall %ld \n", a0);
   }
